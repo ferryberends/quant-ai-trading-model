@@ -1,0 +1,196 @@
+//@version=5
+indicator("Quant AI Trading Signals", overlay=true, max_lines_count=500)
+
+// ============================================================================
+// QUANT AI TRADING INDICATOR - Based on Quantitative Fundamentals
+// ============================================================================
+
+// ─────────────────────────────────────────────────────────────────────────
+// SETTINGS
+// ─────────────────────────────────────────────────────────────────────────
+
+rsi_length = input.int(14, "RSI Length", minval=2, maxval=200, group="RSI Settings")
+rsi_overbought = input.int(70, "RSI Overbought", minval=50, maxval=90, group="RSI Settings")
+rsi_oversold = input.int(30, "RSI Oversold", minval=10, maxval=50, group="RSI Settings")
+
+macd_fast = input.int(12, "MACD Fast", minval=2, maxval=50, group="MACD Settings")
+macd_slow = input.int(26, "MACD Slow", minval=5, maxval=100, group="MACD Settings")
+macd_signal = input.int(9, "MACD Signal", minval=2, maxval=50, group="MACD Settings")
+
+bb_length = input.int(20, "BB Length", minval=5, maxval=200, group="Bollinger Bands")
+bb_std = input.float(2.0, "BB Std Dev", minval=0.5, maxval=5.0, step=0.1, group="Bollinger Bands")
+
+ma_fast = input.int(9, "Fast MA", minval=2, maxval=200, group="Moving Averages")
+ma_slow = input.int(21, "Slow MA", minval=2, maxval=200, group="Moving Averages")
+
+vol_length = input.int(20, "Volume MA Length", minval=2, maxval=200, group="Volume")
+lookback = input.int(5, "Lookback Bars", minval=2, maxval=50, group="Market Structure")
+confluence_threshold = input.int(3, "Min Confluences for Signal", minval=1, maxval=5, group="Signal Settings")
+
+show_signals = input.bool(true, "Show Buy/Sell Signals", group="Display")
+show_confluence = input.bool(true, "Show Confluence Boxes", group="Display")
+show_dashboard = input.bool(true, "Show Info Labels", group="Display")
+show_table = input.bool(true, "Show Summary Table", group="Display")
+
+// ─────────────────────────────────────────────────────────────────────────
+// CALCULATIONS
+// ─────────────────────────────────────────────────────────────────────────
+
+rsi_val = ta.rsi(close, rsi_length)
+
+rsi_extreme = rsi_val < rsi_oversold ? 1 : (rsi_val > rsi_overbought ? -1 : 0)
+rsi_score = math.abs(rsi_extreme) * 25
+
+[macd_line, signal_line, hist] = ta.macd(close, macd_fast, macd_slow, macd_signal)
+macd_bullish = macd_line > signal_line and hist > 0 ? 1 : 0
+macd_bearish = macd_line < signal_line and hist < 0 ? -1 : 0
+macd_score = math.abs(macd_bullish + macd_bearish) * 20
+
+[bb_middle, bb_upper, bb_lower] = ta.bb(close, bb_length, bb_std)
+bb_position = (close - bb_lower) / (bb_upper - bb_lower)
+bb_extreme = bb_position < 0.2 ? 1 : (bb_position > 0.8 ? -1 : 0)
+bb_score = math.abs(bb_extreme) * 20
+
+volume_ma = ta.sma(volume, vol_length)
+volume_surge = volume > volume_ma * 1.5 ? 1 : 0
+volume_score = volume_surge * 15
+
+roc_length = 9
+price_change = (close - close[roc_length]) / close[roc_length]
+momentum_bullish = price_change > 0.01 ? 1 : 0
+momentum_bearish = price_change < -0.01 ? -1 : 0
+momentum_score = math.abs(momentum_bullish + momentum_bearish) * 20
+
+ml_score_raw = rsi_score + macd_score + bb_score + volume_score + momentum_score
+ml_score = math.min(100, ml_score_raw)
+
+direction_score = rsi_extreme + macd_bullish + momentum_bullish + bb_extreme
+direction = direction_score > 0 ? 1 : (direction_score < 0 ? -1 : 0)
+
+highest_recent = ta.highest(high, lookback)
+lowest_recent = ta.lowest(low, lookback)
+
+higher_high = high > highest_recent[1]
+lower_low = low < lowest_recent[1]
+
+structure_bullish = higher_high and close > close[1]
+structure_bearish = lower_low and close < close[1]
+
+ma_fast_val = ta.sma(close, ma_fast)
+ma_slow_val = ta.sma(close, ma_slow)
+
+distance_from_ma = math.abs(close - ma_fast_val) / ma_fast_val
+mean_reversion_signal = distance_from_ma > 0.03 ? 1 : 0
+
+confluence_count_long = (rsi_extreme == 1 ? 1 : 0) +
+                        (macd_bullish == 1 ? 1 : 0) +
+                        (bb_extreme == 1 ? 1 : 0) +
+                        (structure_bullish ? 1 : 0) +
+                        (momentum_bullish == 1 ? 1 : 0)
+
+confluence_count_short = (rsi_extreme == -1 ? 1 : 0) +
+                         (macd_bearish == -1 ? 1 : 0) +
+                         (bb_extreme == -1 ? 1 : 0) +
+                         (structure_bearish ? 1 : 0) +
+                         (momentum_bearish == -1 ? 1 : 0)
+
+confluence_bullish = confluence_count_long >= confluence_threshold
+confluence_bearish = confluence_count_short >= confluence_threshold
+
+buy_signal = confluence_bullish and direction == 1
+sell_signal = confluence_bearish and direction == -1
+
+signal_strength = math.max(confluence_count_long, confluence_count_short)
+
+// ─────────────────────────────────────────────────────────────────────────
+// PLOTTING
+// ─────────────────────────────────────────────────────────────────────────
+
+if show_signals
+    if buy_signal
+        plotshape(1, title="Buy Signal", location=location.belowbar, style=shape.labelup,
+                  color=color.new(color.green, 0), textcolor=color.white, size=size.small,
+                  text="BUY")
+        alert("🟢 BUY SIGNAL - ML Score: " + str.tostring(math.round(ml_score)) + "/100", alert.freq_once_per_bar_close)
+
+    if sell_signal
+        plotshape(-1, title="Sell Signal", location=location.abovebar, style=shape.labeldown,
+                  color=color.new(color.red, 0), textcolor=color.white, size=size.small,
+                  text="SELL")
+        alert("🔴 SELL SIGNAL - ML Score: " + str.tostring(math.round(ml_score)) + "/100", alert.freq_once_per_bar_close)
+
+if show_confluence and confluence_bullish
+    bgcolor(color.new(color.green, 90))
+
+if show_confluence and confluence_bearish
+    bgcolor(color.new(color.red, 90))
+
+// Plot score and RSI so the indicator has visual context
+plot(ml_score, title="ML Score", color=color.new(color.blue, 0), linewidth=2)
+plot(rsi_val, title="RSI", color=color.new(color.orange, 0), linewidth=1)
+plot(signal_strength * 20, title="Confluence Score", color=color.new(color.purple, 0), linewidth=2)
+
+// ─────────────────────────────────────────────────────────────────────────
+// DASHBOARD AND TABLE
+// ─────────────────────────────────────────────────────────────────────────
+
+if show_dashboard
+    dashboard_text = "╔═ QUANT AI SIGNALS ══════════════╗\n" +
+                     "║ ML Score: " + str.tostring(math.round(ml_score)) + "/100" +
+                     (ml_score >= 70 ? " ✓✓✓" : (ml_score >= 50 ? " ✓✓" : " ✓")) + "\n" +
+                     "║ RSI: " + str.tostring(math.round(rsi_val)) +
+                     (rsi_val > rsi_overbought ? " (OVERBOUGHT)" : (rsi_val < rsi_oversold ? " (OVERSOLD)" : " (NEUTRAL)")) + "\n" +
+                     "║ MACD: " + (macd_bullish == 1 ? "BULLISH ↗" : (macd_bearish == -1 ? "BEARISH ↘" : "NEUTRAL →")) + "\n" +
+                     "║ Bollinger: " + str.tostring(math.round(bb_position * 100)) + "% " +
+                     (bb_position > 0.8 ? "(TOP)" : (bb_position < 0.2 ? "(BOTTOM)" : "(MIDDLE)")) + "\n" +
+                     "║ Volume: " + (volume_surge == 1 ? "SURGE ✓" : "NORMAL") + "\n" +
+                     "║ Momentum: " + (momentum_bullish == 1 ? "UP ↗" : (momentum_bearish == -1 ? "DOWN ↘" : "FLAT →")) + "\n" +
+                     "║ Structure: " + (structure_bullish ? "LONG ✓" : (structure_bearish ? "SHORT ✓" : "NEUTRAL")) + "\n" +
+                     "║ Confluence: " + str.tostring(signal_strength) + "/5" +
+                     (confluence_bullish ? " (BUY ZONE)" : (confluence_bearish ? " (SELL ZONE)" : " (NO SIGNAL)")) + "\n" +
+                     "╚════════════════════════════════╝"
+
+    label.new(bar_index, high + ta.tr(true), dashboard_text,
+              xloc=xloc.bar_index, yloc=yloc.abovebar,
+              style=label.style_label_down, color=color.new(color.gray, 85),
+              textcolor=color.white, text_font_size=size.small)
+
+if show_table and barstate.islast
+    var table summary_table = table.new(position.top_right, 2, 8,
+                                       border_color=color.gray,
+                                       border_width=1)
+    table.cell(summary_table, 0, 0, "METRIC", bgcolor=color.navy, text_color=color.white, text_font_size=size.small)
+    table.cell(summary_table, 1, 0, "VALUE", bgcolor=color.navy, text_color=color.white, text_font_size=size.small)
+
+    table.cell(summary_table, 0, 1, "ML Score", text_font_size=size.small)
+    table.cell(summary_table, 1, 1, str.tostring(math.round(ml_score)) + "/100",
+              bgcolor=color.new(color.green, 80), text_font_size=size.small)
+
+    table.cell(summary_table, 0, 2, "RSI", text_font_size=size.small)
+    table.cell(summary_table, 1, 2, str.tostring(math.round(rsi_val)), text_font_size=size.small)
+
+    table.cell(summary_table, 0, 3, "MACD", text_font_size=size.small)
+    table.cell(summary_table, 1, 3, (macd_bullish == 1 ? "↗ UP" : "↘ DOWN"), text_font_size=size.small)
+
+    table.cell(summary_table, 0, 4, "BB Pos", text_font_size=size.small)
+    table.cell(summary_table, 1, 4, str.tostring(math.round(bb_position * 100)) + "%", text_font_size=size.small)
+
+    table.cell(summary_table, 0, 5, "Volume", text_font_size=size.small)
+    table.cell(summary_table, 1, 5, (volume_surge == 1 ? "SURGE" : "NORMAL"), text_font_size=size.small)
+
+    table.cell(summary_table, 0, 6, "Confluence", text_font_size=size.small)
+    table.cell(summary_table, 1, 6, str.tostring(signal_strength) + "/5",
+              bgcolor=confluence_bullish ? color.new(color.green, 80) :
+                      (confluence_bearish ? color.new(color.red, 80) : color.new(color.gray, 80)),
+              text_font_size=size.small)
+
+    table.cell(summary_table, 0, 7, "SIGNAL", text_font_size=size.small, text_color=color.white)
+    table.cell(summary_table, 1, 7,
+              (buy_signal ? "🟢 BUY" : (sell_signal ? "🔴 SELL" : "⚪ WAIT")),
+              bgcolor=buy_signal ? color.new(color.green, 60) :
+                      (sell_signal ? color.new(color.red, 60) : color.new(color.gray, 80)),
+              text_font_size=size.small)
+
+// ─────────────────────────────────────────────────────────────────────────
+// END OF SCRIPT
+// ─────────────────────────────────────────────────────────────────────────
